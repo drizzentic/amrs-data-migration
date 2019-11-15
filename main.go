@@ -1,13 +1,14 @@
 package main
 
 import (
+	"container/list"
 	"fmt"
 	"log"
 	"time"
 )
 
 var (
-	amrs, kenyaemr = Connect()
+	amrs = Connect()
 )
 
 const (
@@ -49,13 +50,13 @@ const (
 
 	insertPatients          = "Insert into openmrs.patient select a.* from amrs.patient a"
 	insertPatientIdentifier = "Insert into openmrs.patient_identifier" +
-		"(patient_id, identifier, identifier_type, preferred, location_id, " +
+		"(patient_identifier_id,patient_id, identifier, identifier_type, preferred, location_id, " +
 		"creator, date_created, voided, voided_by, date_voided, v" +
 		"oid_reason, uuid, date_changed, changed_by)" +
-		"select patient_id, identifier, identifier_type, preferred, location_id, " +
+		"select patient_identifier_id,patient_id, identifier, identifier_type, preferred, location_id, " +
 		"creator, date_created, voided, voided_by, date_voided, v" +
 		"oid_reason, uuid, date_changed, changed_by from amrs.patient_identifier a"
-	insertPatientIdentifyType = "Insert into openmrs.patient_identifier_type(" +
+	insertPatientIdentifierType = "Insert into openmrs.patient_identifier_type(" +
 		"name, description, format, check_digit, creator, date_created, " +
 		"required, format_description, validator, retired, retired_by, " +
 		"date_retired, retire_reason, uuid, location_behavior, " +
@@ -65,25 +66,24 @@ const (
 		"date_retired, retire_reason, uuid, location_behavior, " +
 		"uniqueness_behavior, date_changed, changed_by" +
 		" from amrs.patient_identifier_type"
+	updatePatientIdentifiers = "update openmrs.patient_identifier set identifier_type = %d where identifier_type = %d and patient_id = %d"
+	updatePersonAttributes   = "update openmrs.person_attribute set person_attribute_type_id = %d where person_attribute_type_id = %d and person_id = %d"
 )
 
 func main() {
 	start := time.Now()
-	defer amrs.Close()
+
 	fmt.Println("Just getting started")
 	if amrs.Ping() != nil {
 		fmt.Println("Database connection to amrs could not be established")
 		return
 	}
-	if kenyaemr.Ping() != nil {
-		fmt.Println("Database connection to Kenyaemr could not be established")
-		return
-	}
-	//insertUser()
-	//insertPersonAttributeTypes()
-	insertPatientIdentifiers()
+
 	elapsed := time.Since(start)
 	log.Printf("Queries execution took %s", elapsed)
+	log.Println("Finished")
+	defer amrs.Close()
+
 }
 
 func insertPerson() {
@@ -189,6 +189,7 @@ func insertPatient() {
 		log.Fatal(err)
 	}
 }
+
 func insertPersonAttributes() {
 	txpa, err := amrs.Begin()
 	//Disable Contraint
@@ -218,6 +219,8 @@ func insertPersonAttributes() {
 		log.Fatal(err)
 	}
 }
+
+//Insert missing attributes types only
 func insertPersonAttributeTypes() {
 	txp, err := amrs.Begin()
 	//Disable Contraint
@@ -226,11 +229,11 @@ func insertPersonAttributeTypes() {
 		txp.Rollback()
 		log.Fatal(err)
 	}
-	_, err = txp.Exec(fmt.Sprintf(truncateTable, "person_attribute_type"))
-	if err != nil {
-		txp.Rollback()
-		log.Fatal(err)
-	}
+	//_, err = txp.Exec(fmt.Sprintf(truncateTable, "person_attribute_type"))
+	//if err != nil {
+	//	txp.Rollback()
+	//	log.Fatal(err)
+	//}
 	_, err = txp.Exec(insertPersonAttrTypes)
 	if err != nil {
 		txp.Rollback()
@@ -246,7 +249,7 @@ func insertPersonAttributeTypes() {
 	if err != nil {
 		log.Fatal(err)
 	}
-	insertPersonAttributes()
+	//insertPersonAttributes()
 }
 func insertPatientIdentifiers() {
 	txpi, err := amrs.Begin()
@@ -276,8 +279,10 @@ func insertPatientIdentifiers() {
 	if err != nil {
 		log.Fatal(err)
 	}
-	insertPatientIdentifierTypes()
+	//insertPatientIdentifierTypes()
 }
+
+//Insert missing person attribute types only
 func insertPatientIdentifierTypes() {
 	txpi, err := amrs.Begin()
 	//Disable Contraint
@@ -291,7 +296,7 @@ func insertPatientIdentifierTypes() {
 		txpi.Rollback()
 		log.Fatal(err)
 	}
-	_, err = txpi.Exec(insertPatientIdentifyType)
+	_, err = txpi.Exec(insertPatientIdentifierType)
 	if err != nil {
 		txpi.Rollback()
 		log.Fatal(err)
@@ -306,4 +311,75 @@ func insertPatientIdentifierTypes() {
 	if err != nil {
 		log.Fatal(err)
 	}
+}
+
+func mapPersonAttributesToAttributeTypes(a *list.Element, list *list.List) bool {
+	//amrs.SetMaxOpenConns(10)
+
+	pMap := a.Value.([]int)
+	for list.Len() > 0 {
+		vals := list.Front().Value.([]int)
+		if len(vals) > 0 {
+
+			amrsId := vals[0]
+			kemrId := vals[1]
+			if amrsId == pMap[1] {
+				amrs.Exec(fmt.Sprintf(updatePersonAttributes, kemrId, pMap[1], pMap[0]))
+			}
+		}
+		list.Remove(list.Front())
+	}
+	return true
+}
+func mapPatientIdentifiersToIdentifierTypes(a *list.Element, list *list.List) bool {
+	//amrs.SetMaxOpenConns(10)
+
+	pMap := a.Value.([]int)
+	for list.Len() > 0 {
+		vals := list.Front().Value.([]int)
+		if len(vals) > 0 {
+
+			amrsId := vals[0]
+			kemrId := vals[1]
+			if amrsId == pMap[1] {
+				amrs.Exec(fmt.Sprintf(updatePatientIdentifiers, kemrId, pMap[1], pMap[0]))
+				//time.Sleep(2 * time.Millisecond)
+			}
+		}
+		list.Remove(list.Front())
+	}
+	return true
+}
+
+func IdMapper() {
+
+	patientsIdQueue := CreatePatientIdentifiersQueue()
+	items := IdentifiersQueueMappedValues()
+
+	for patientsIdQueue.Len() > 0 {
+		if mapPatientIdentifiersToIdentifierTypes(patientsIdQueue.Front(), items) {
+			fmt.Printf("Successfully mapped %+v ", patientsIdQueue.Front().Value)
+			fmt.Println("*****")
+			fmt.Println("patientsIdQueue", patientsIdQueue.Len())
+			patientsIdQueue.Remove(patientsIdQueue.Front())
+			items = IdentifiersQueueMappedValues()
+		}
+	}
+
+}
+func AttributesMapper() {
+
+	patientsAttrQueue := CreatePatientAttributesQueue()
+	Attritems := AttributesQueueMappedValues()
+	fmt.Println(patientsAttrQueue.Len())
+	for patientsAttrQueue.Len() > 0 {
+		if mapPersonAttributesToAttributeTypes(patientsAttrQueue.Front(), Attritems) {
+			fmt.Printf("Successfully mapped %+v ", patientsAttrQueue.Front().Value)
+			fmt.Println("*****")
+			fmt.Println("patientsAttrQueue", patientsAttrQueue.Len())
+			patientsAttrQueue.Remove(patientsAttrQueue.Front())
+			//items = AttributesQueueMappedValues()
+		}
+	}
+
 }
